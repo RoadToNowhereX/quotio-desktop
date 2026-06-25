@@ -170,18 +170,19 @@ jobs:
         shell: bash
         run: |
           echo "=== bundle tree ==="
-          find apps/desktop/src-tauri/target -type d -name bundle -exec ls -lR {} \; 2>/dev/null || echo "(no bundle dir found)"
+          find target -type d -name bundle -exec ls -lR {} \; 2>/dev/null || echo "(no bundle dir found)"
 
       # 把构建产物作为 artifact 上传,run 结束后在 Actions 页下载对应平台的安装包。
-      # tauri-action 默认把产物放在 apps/desktop/src-tauri/target/release(或对应 target)。
+      # 注意:项目根 Cargo.toml 是 workspace 根,所有产物统一输出到仓库根的 target/,
+      # 而不是 apps/desktop/src-tauri/target/。
       - name: Upload installers — Windows
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
           name: quotio-dev-windows
           path: |
-            apps/desktop/src-tauri/target/release/bundle/msi/*.msi
-            apps/desktop/src-tauri/target/release/bundle/nsis/*-setup.exe
+            target/release/bundle/msi/*.msi
+            target/release/bundle/nsis/*-setup.exe
           if-no-files-found: warn
           retention-days: 14
 
@@ -191,7 +192,7 @@ jobs:
         with:
           name: quotio-dev-macos
           path: |
-            apps/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            target/universal-apple-darwin/release/bundle/dmg/*.dmg
           if-no-files-found: warn
           retention-days: 14
 
@@ -201,7 +202,7 @@ jobs:
         with:
           name: quotio-dev-linux
           path: |
-            apps/desktop/src-tauri/target/release/bundle/appimage/*.AppImage
-            apps/desktop/src-tauri/target/release/bundle/deb/*.deb
+            target/release/bundle/appimage/*.AppImage
+            target/release/bundle/deb/*.deb
           if-no-files-found: warn
           retention-days: 14
