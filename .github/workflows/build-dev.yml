@@ -18,12 +18,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # --config 覆盖 createUpdaterArtifacts:false —— tauri.conf.json 里配了 pubkey
+          # 且 createUpdaterArtifacts:true,默认会要求 TAURI_SIGNING_PRIVATE_KEY 签名。
+          # dev 包不需要自动更新,关掉它就能跳过签名,无需配置签名密钥。
           - platform: macos-latest
-            args: "--target universal-apple-darwin"
+            args: "--target universal-apple-darwin --config {\"bundle\":{\"createUpdaterArtifacts\":false}}"
           - platform: ubuntu-22.04
-            args: ""
+            args: "--config {\"bundle\":{\"createUpdaterArtifacts\":false}}"
           - platform: windows-latest
-            args: ""
+            args: "--config {\"bundle\":{\"createUpdaterArtifacts\":false}}"
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
