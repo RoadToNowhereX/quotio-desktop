@@ -18,15 +18,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # --config 覆盖 createUpdaterArtifacts:false —— tauri.conf.json 里配了 pubkey
-          # 且 createUpdaterArtifacts:true,默认会要求 TAURI_SIGNING_PRIVATE_KEY 签名。
-          # dev 包不需要自动更新,关掉它就能跳过签名,无需配置签名密钥。
           - platform: macos-latest
-            args: "--target universal-apple-darwin --config {\"bundle\":{\"createUpdaterArtifacts\":false}}"
+            args: "--target universal-apple-darwin"
           - platform: ubuntu-22.04
-            args: "--config {\"bundle\":{\"createUpdaterArtifacts\":false}}"
+            args: ""
           - platform: windows-latest
-            args: "--config {\"bundle\":{\"createUpdaterArtifacts\":false}}"
+            args: ""
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
@@ -55,6 +52,19 @@ jobs:
       - name: Install frontend dependencies
         working-directory: apps/desktop
         run: npm install
+
+      # tauri.conf.json 里配了 updater pubkey 且 createUpdaterArtifacts:true,
+      # 默认会要求 TAURI_SIGNING_PRIVATE_KEY 签名。dev 包不需要自动更新,
+      # 直接用 jq 改写配置文件关闭它,避免 --config JSON 合并行为不可靠
+      # (浅合并会丢掉 bundle.active/targets 等字段,导致只编译不打包)。
+      - name: Disable updater signing for dev build
+        working-directory: apps/desktop/src-tauri
+        shell: bash
+        run: |
+          jq '.bundle.createUpdaterArtifacts = false' tauri.conf.json > tauri.conf.json.tmp
+          mv tauri.conf.json.tmp tauri.conf.json
+          echo "--- createUpdaterArtifacts after patch ---"
+          jq '.bundle.createUpdaterArtifacts' tauri.conf.json
 
       # 与 release.yml 一致:把 CLIProxyAPI 核心预先放进 resources/,装完即用。
       - name: Stage CLIProxyAPI core — Windows
@@ -153,6 +163,14 @@ jobs:
         with:
           projectPath: apps/desktop
           args: ${{ matrix.args }}
+
+      # 列出 bundle 目录实际内容,确认安装包路径(若上传仍找不到文件可据此调整 glob)。
+      - name: List bundle output (debug)
+        if: always()
+        shell: bash
+        run: |
+          echo "=== bundle tree ==="
+          find apps/desktop/src-tauri/target -type d -name bundle -exec ls -lR {} \; 2>/dev/null || echo "(no bundle dir found)"
 
       # 把构建产物作为 artifact 上传,run 结束后在 Actions 页下载对应平台的安装包。
       # tauri-action 默认把产物放在 apps/desktop/src-tauri/target/release(或对应 target)。
