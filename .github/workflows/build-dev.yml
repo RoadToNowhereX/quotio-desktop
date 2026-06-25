@@ -1,0 +1,186 @@
+name: Dev build
+
+# 推送到 dev 分支时,在三端各自构建安装包并作为 artifact 上传,供下载测试。
+# 与 release.yml 的区别:不发 Release、不动 latest.json、不要求签名密钥。
+# 用法:git push origin dev  →  Actions 跑完 →  在该 run 页面下载对应平台的安装包。
+on:
+  push:
+    branches:
+      - dev
+  workflow_dispatch: # 也允许在 Actions 页手动触发(可选任意分支)
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: "--target universal-apple-darwin"
+          - platform: ubuntu-22.04
+            args: ""
+          - platform: windows-latest
+            args: ""
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Install frontend dependencies
+        working-directory: apps/desktop
+        run: npm install
+
+      # 与 release.yml 一致:把 CLIProxyAPI 核心预先放进 resources/,装完即用。
+      - name: Stage CLIProxyAPI core — Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ver = "7.2.20"
+          $url = "https://github.com/router-for-me/CLIProxyAPI/releases/download/v$ver/CLIProxyAPI_${ver}_windows_amd64.zip"
+          $dest = "resources/proxy/windows"
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          $zip = Join-Path $env:RUNNER_TEMP "cpa.zip"
+          $ext = Join-Path $env:RUNNER_TEMP "cpa"
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath $ext -Force
+          $bin = Get-ChildItem -Path $ext -Recurse -Filter "cli-proxy-api*.exe" | Select-Object -First 1
+          if (-not $bin) { throw "cli-proxy-api.exe not found in CLIProxyAPI archive" }
+          Copy-Item $bin.FullName (Join-Path $dest "CLIProxyAPI.exe") -Force
+          Write-Host ("Staged " + $dest + "/CLIProxyAPI.exe")
+
+      - name: Stage CLIProxyAPI core — macOS/Linux
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ver=7.2.20
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            asset="CLIProxyAPI_${ver}_darwin_aarch64.tar.gz"; dir="darwin"
+          else
+            asset="CLIProxyAPI_${ver}_linux_amd64.tar.gz"; dir="linux"
+          fi
+          url="https://github.com/router-for-me/CLIProxyAPI/releases/download/v${ver}/${asset}"
+          dest="resources/proxy/${dir}"
+          mkdir -p "$dest"
+          tmp="$(mktemp -d)"
+          curl -fsSL --retry 3 "$url" -o "$tmp/cpa.tgz"
+          tar -xzf "$tmp/cpa.tgz" -C "$tmp"
+          bin="$(find "$tmp" -type f -name 'cli-proxy-api*' | head -1)"
+          if [ -z "$bin" ]; then echo "cli-proxy-api not found in archive"; ls -R "$tmp"; exit 1; fi
+          cp "$bin" "$dest/CLIProxyAPI"
+          chmod +x "$dest/CLIProxyAPI"
+          echo "Staged $dest/CLIProxyAPI"
+
+      # 与 release.yml 一致:从 deps 预发布拉取 kiro-rs + key-router 插件。
+      # deps 资产未生成时优雅降级(kiro/插件缺失),不让 dev 构建失败。
+      - name: Stage kiro-rs + key-router plugin — Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $base = "https://github.com/${{ github.repository }}/releases/download/deps"
+          New-Item -ItemType Directory -Force -Path "resources/kiro/windows" | Out-Null
+          New-Item -ItemType Directory -Force -Path "resources/proxy/windows/plugins" | Out-Null
+          try {
+            Invoke-WebRequest -Uri "$base/kiro-rs.exe" -OutFile "resources/kiro/windows/kiro-rs.exe"
+            Invoke-WebRequest -Uri "$base/quotio-key-router.dll" -OutFile "resources/proxy/windows/plugins/quotio-key-router.dll"
+            Write-Host "Staged kiro-rs.exe + quotio-key-router.dll (Windows)"
+          } catch {
+            Write-Warning "deps 资产下载失败($_);本次 Windows 包不内置 kiro/插件(优雅降级)。先跑 build-deps 工作流。"
+          }
+
+      - name: Stage kiro-rs + key-router plugin — macOS/Linux
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -uo pipefail
+          base="https://github.com/${{ github.repository }}/releases/download/deps"
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            plat=darwin; kasset=kiro-rs-darwin; passet=quotio-key-router-darwin.dylib; pext=dylib
+          else
+            plat=linux;  kasset=kiro-rs-linux;  passet=quotio-key-router-linux.so;     pext=so
+          fi
+          mkdir -p "resources/kiro/$plat" "resources/proxy/$plat/plugins"
+          if curl -fsSL "$base/$kasset" -o "resources/kiro/$plat/kiro-rs"; then
+            chmod +x "resources/kiro/$plat/kiro-rs"
+            echo "Staged kiro-rs ($plat)"
+          else
+            echo "::warning::kiro-rs ($plat) 下载失败,本次包不内置(优雅降级);先跑 build-deps。"
+            rm -f "resources/kiro/$plat/kiro-rs"
+          fi
+          if curl -fsSL "$base/$passet" -o "resources/proxy/$plat/plugins/quotio-key-router.$pext"; then
+            echo "Staged quotio-key-router.$pext ($plat)"
+          else
+            rm -f "resources/proxy/$plat/plugins/quotio-key-router.$pext"
+            echo "::warning::key-router 插件 ($plat) 下载失败,本次 dev 包不内置(优雅降级)。"
+          fi
+
+      # 只构建,不发布:不传 tagName / releaseName / releaseBody,tauri-action 不会创建 Release。
+      # 缺签名密钥也无所谓,只是不生成 .sig / latest.json,dev 包照常打出。
+      - name: Build (no release)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          QUOTIO_GEMINI_CLIENT_ID: ${{ secrets.QUOTIO_GEMINI_CLIENT_ID }}
+          QUOTIO_GEMINI_CLIENT_SECRET: ${{ secrets.QUOTIO_GEMINI_CLIENT_SECRET }}
+          QUOTIO_ANTIGRAVITY_CLIENT_ID: ${{ secrets.QUOTIO_ANTIGRAVITY_CLIENT_ID }}
+          QUOTIO_ANTIGRAVITY_CLIENT_SECRET: ${{ secrets.QUOTIO_ANTIGRAVITY_CLIENT_SECRET }}
+        with:
+          projectPath: apps/desktop
+          args: ${{ matrix.args }}
+
+      # 把构建产物作为 artifact 上传,run 结束后在 Actions 页下载对应平台的安装包。
+      # tauri-action 默认把产物放在 apps/desktop/src-tauri/target/release(或对应 target)。
+      - name: Upload installers — Windows
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: quotio-dev-windows
+          path: |
+            apps/desktop/src-tauri/target/release/bundle/msi/*.msi
+            apps/desktop/src-tauri/target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload installers — macOS
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: quotio-dev-macos
+          path: |
+            apps/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload installers — Linux
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: quotio-dev-linux
+          path: |
+            apps/desktop/src-tauri/target/release/bundle/appimage/*.AppImage
+            apps/desktop/src-tauri/target/release/bundle/deb/*.deb
+          if-no-files-found: warn
+          retention-days: 14
