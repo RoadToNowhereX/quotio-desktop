@@ -2168,16 +2168,36 @@ struct TraeAuth {
     api_host: Option<String>,
     email: Option<String>,
     username: Option<String>,
+    /// IDE flavor that yielded this auth ("Trae" or "Trae CN"); tracked so the
+    /// scan result can tell the user which installation was detected.
+    source: Option<String>,
 }
 
-/// Read Trae's IDE auth from `%APPDATA%/Trae/User/globalStorage/storage.json`.
+/// Subdirectory names of the Trae IDE family under `%APPDATA%`. Both the
+/// international ("Trae") and the China ("Trae CN") builds store auth in the
+/// same `User/globalStorage/storage.json` layout, so we probe each in turn.
+const TRAE_IDE_DIRS: &[&str] = &["Trae", "Trae CN"];
+
+/// Read Trae's IDE auth from `%APPDATA%/{Trae|Trae CN}/User/globalStorage/storage.json`.
+/// Probes the international "Trae" build first, then the "Trae CN" build.
 fn read_trae_auth() -> Option<TraeAuth> {
     let base = std::env::var("APPDATA").ok()?;
-    let path = std::path::Path::new(&base)
-        .join("Trae")
-        .join("User")
-        .join("globalStorage")
-        .join("storage.json");
+    for dir in TRAE_IDE_DIRS {
+        let path = std::path::Path::new(&base)
+            .join(dir)
+            .join("User")
+            .join("globalStorage")
+            .join("storage.json");
+        let Some(auth) = read_trae_auth_file(&path) else { continue };
+        return Some(TraeAuth {
+            source: Some((*dir).to_string()),
+            ..auth
+        });
+    }
+    None
+}
+
+fn read_trae_auth_file(path: &Path) -> Option<TraeAuth> {
     let raw = fs::read_to_string(path).ok()?;
     let storage: serde_json::Value = serde_json::from_str(&raw).ok()?;
     let auth_str = storage.get("iCubeAuthInfo://icube.cloudide")?.as_str()?;
@@ -2200,7 +2220,58 @@ fn read_trae_auth() -> Option<TraeAuth> {
             .and_then(|entry| entry.get("username"))
             .and_then(|value| value.as_str())
             .map(String::from),
+        source: None,
     })
+}
+
+/// Result of a local Trae IDE scan, surfaced to the UI so the "add account"
+/// modal can confirm which installation was detected and which account it holds.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TraeScanResult {
+    /// Which IDE flavor was read ("Trae" or "Trae CN").
+    pub source: String,
+    /// Absolute path of the `storage.json` that was parsed.
+    pub storage_path: String,
+    /// Account email, when present in the storage file.
+    pub email: Option<String>,
+    /// Account username, when present in the storage file.
+    pub username: Option<String>,
+}
+
+/// Probe the Trae / Trae CN IDE installations and return the first readable
+/// account. Used by the "Add Trae account" modal to confirm the scan and by
+/// `refresh_quotas` indirectly (which already calls `read_trae_auth`).
+pub fn scan_trae_account() -> Result<TraeScanResult, String> {
+    let base = std::env::var("APPDATA")
+        .map_err(|_| "无法读取 %APPDATA% 环境变量（仅支持 Windows 桌面端）。".to_string())?;
+    let mut tried: Vec<String> = Vec::new();
+    for dir in TRAE_IDE_DIRS {
+        let path = std::path::Path::new(&base)
+            .join(dir)
+            .join("User")
+            .join("globalStorage")
+            .join("storage.json");
+        let display = path.display().to_string();
+        tried.push(display.clone());
+        let Some(auth) = read_trae_auth_file(&path) else { continue };
+        let email = auth.email.clone();
+        let username = auth.username.clone();
+        if auth.access_token.is_none() {
+            return Err(format!(
+                "已找到 {dir} 的 storage.json，但缺少登录令牌（token）。请先在 {dir} IDE 中登录后重试。\n路径: {display}",
+            ));
+        }
+        return Ok(TraeScanResult {
+            source: (*dir).to_string(),
+            storage_path: display,
+            email,
+            username,
+        });
+    }
+    Err(format!(
+        "未找到 Trae 或 Trae CN 的登录数据。请先安装并登录 Trae IDE。\n已尝试读取:\n{}",
+        tried.iter().map(|p| format!("  - {p}")).collect::<Vec<_>>().join("\n"),
+    ))
 }
 
 #[derive(Debug, Deserialize)]

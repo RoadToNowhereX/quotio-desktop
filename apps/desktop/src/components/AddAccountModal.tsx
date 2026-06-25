@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, type ChangeEvent } from "react";
 import { Mfa2faQuickPanel } from "./Mfa2faQuickPanel";
-import type { NativeOAuthCompleteResponse, NativeOAuthStartResponse, OAuthStatusResponse, OAuthUrlResponse, ProviderSummary } from "../types";
+import type { NativeOAuthCompleteResponse, NativeOAuthStartResponse, OAuthStatusResponse, OAuthUrlResponse, ProviderSummary, TraeScanResult } from "../types";
 import { CheckIcon, CopyIcon, KeyIcon, PlusIcon, RefreshIcon } from "./icons";
 import { invoke } from "../lib/tauri";
 
@@ -38,7 +38,16 @@ function SpinnerIcon() {
   );
 }
 
-type Tab = "oauth" | "token" | "import";
+function ScanIcon() {
+  return (
+    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M2.5 5V3.5a1 1 0 0 1 1-1H5M11 2.5h1.5a1 1 0 0 1 1 1V5M13.5 11v1.5a1 1 0 0 1-1 1H11M5 13.5H3.5a1 1 0 0 1-1-1V11" />
+      <path d="M2.5 8h11" />
+    </svg>
+  );
+}
+
+type Tab = "oauth" | "token" | "import" | "local_scan";
 
 type AddAccountModalProps = {
   provider: ProviderSummary;
@@ -63,7 +72,10 @@ export function AddAccountModal({
   const hasProxyOAuth = Boolean(provider.oauth_endpoint);
   const hasOAuth = hasNativeOAuth || hasProxyOAuth;
   const isVertex = provider.id === "vertex";
-  const [tab, setTab] = useState<Tab>(hasOAuth ? "oauth" : "token");
+  // Local-scan providers (Trae / Trae CN) read auth directly from their IDE's
+  // `storage.json` — no OAuth, no manual token. They get a dedicated scan flow.
+  const isLocalScan = provider.auth_method === "local_scan";
+  const [tab, setTab] = useState<Tab>(isLocalScan ? "local_scan" : hasOAuth ? "oauth" : "token");
   const nativeLoginRef = useRef<string | null>(null);
   const [isDeviceFlow, setIsDeviceFlow] = useState(false);
   const [deviceUserCode, setDeviceUserCode] = useState("");
@@ -88,12 +100,27 @@ export function AddAccountModal({
   // File input ref
   const fileRef = useRef<HTMLInputElement>(null);
 
+  // Local-scan state (Trae): the IDE `storage.json` is probed on the backend;
+  // we surface the detected account (or error) and let the user re-scan after
+  // logging in to the IDE. There's nothing to paste or authorize here.
+  const [scanStatus, setScanStatus] = useState<"idle" | "scanning" | "success" | "error">("idle");
+  const [scanResult, setScanResult] = useState<TraeScanResult | null>(null);
+  const [scanError, setScanError] = useState<string | null>(null);
+
   // Auto-prepare OAuth when tab opens
   useEffect(() => {
     if (tab === "oauth" && hasOAuth && oauthStatus === "idle") {
       void prepareOAuth();
     }
     return () => { pollRef.current = null; nativeLoginRef.current = null; };
+  }, [tab]);
+
+  // Auto-scan when the local_scan tab opens for a Trae provider.
+  useEffect(() => {
+    if (tab === "local_scan" && provider.id === "trae" && scanStatus === "idle") {
+      void handleTraeScan();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
 
   // Auto-close modal on success after 1200ms
@@ -293,6 +320,26 @@ export function AddAccountModal({
     setImportMessage("");
   }
 
+  // Probe the local Trae / Trae CN IDE installation. Trae auth lives in
+  // `%APPDATA%\{Trae|Trae CN}\User\globalStorage\storage.json` — there's no
+  // OAuth and no pasteable token, so "adding" the account means scanning that
+  // file and letting the quota refresh pick it up.
+  async function handleTraeScan() {
+    setScanStatus("scanning");
+    setScanError(null);
+    setScanResult(null);
+    try {
+      const result = await invoke<TraeScanResult>("scan_trae_account");
+      setScanResult(result);
+      setScanStatus("success");
+      // Refresh quotas so the newly detected Trae account shows up immediately.
+      onRefreshQuotas();
+    } catch (err) {
+      setScanError(typeof err === "string" ? err : String(err));
+      setScanStatus("error");
+    }
+  }
+
   return (
     <div className="modal-overlay aam-overlay" onClick={onClose}>
       <div className="aam-modal" onClick={(e) => e.stopPropagation()}>
@@ -302,17 +349,26 @@ export function AddAccountModal({
         </div>
 
         <div className="aam-tabs">
-          {hasOAuth ? (
+          {isLocalScan ? (
+            <button className={`aam-tab${tab === "local_scan" ? " aam-tab--active" : ""}`} type="button" onClick={() => switchTab("local_scan")}>
+              <ScanIcon /> 本地扫描
+            </button>
+          ) : null}
+          {!isLocalScan && hasOAuth ? (
             <button className={`aam-tab${tab === "oauth" ? " aam-tab--active" : ""}`} type="button" onClick={() => switchTab("oauth")}>
               <GlobeIcon /> OAuth 授权
             </button>
           ) : null}
-          <button className={`aam-tab${tab === "token" ? " aam-tab--active" : ""}`} type="button" onClick={() => switchTab("token")}>
-            <KeyIcon /> Token / JSON
-          </button>
-          <button className={`aam-tab${tab === "import" ? " aam-tab--active" : ""}`} type="button" onClick={() => switchTab("import")}>
-            <FileIcon /> 导入
-          </button>
+          {!isLocalScan ? (
+            <>
+              <button className={`aam-tab${tab === "token" ? " aam-tab--active" : ""}`} type="button" onClick={() => switchTab("token")}>
+                <KeyIcon /> Token / JSON
+              </button>
+              <button className={`aam-tab${tab === "import" ? " aam-tab--active" : ""}`} type="button" onClick={() => switchTab("import")}>
+                <FileIcon /> 导入
+              </button>
+            </>
+          ) : null}
         </div>
 
         <div className="aam-body">
@@ -425,6 +481,54 @@ export function AddAccountModal({
               <button className="aam-primary-btn" type="button" onClick={() => fileRef.current?.click()} disabled={importing}>
                 <FileIcon /> 选择 JSON 文件导入
               </button>
+            </div>
+          )}
+
+          {tab === "local_scan" && (
+            <div className="aam-section">
+              <p className="aam-desc">
+                {provider.display_name} 的账号信息由本工具自动从本地 IDE 安装目录读取，无需 OAuth 授权或手动粘贴 Token。
+              </p>
+              <p className="aam-hint">
+                将自动扫描以下路径（任一存在即可）：
+              </p>
+              <ul className="aam-hint" style={{ marginTop: 0, paddingLeft: "1.2em" }}>
+                <li><code>%APPDATA%\Trae\User\globalStorage\storage.json</code></li>
+                <li><code>%APPDATA%\Trae CN\User\globalStorage\storage.json</code></li>
+              </ul>
+              <p className="aam-hint">请先在 Trae / Trae CN IDE 中完成登录，然后点击下方按钮重新扫描。</p>
+
+              <button
+                className="aam-primary-btn"
+                type="button"
+                onClick={() => void handleTraeScan()}
+                disabled={scanStatus === "scanning"}
+              >
+                {scanStatus === "scanning" ? <SpinnerIcon /> : <ScanIcon />}
+                {scanStatus === "success" ? "重新扫描" : "立即扫描"}
+              </button>
+
+              {scanStatus === "success" && scanResult ? (
+                <div className="aam-status aam-status--success">
+                  <CheckIcon />
+                  <span>
+                    已检测到 {scanResult.source} 账号：
+                    {scanResult.email ?? scanResult.username ?? "（未读取到账号名）"}
+                  </span>
+                  <p className="aam-hint" style={{ marginTop: 4, wordBreak: "break-all" }}>
+                    来源：{scanResult.storage_path}
+                  </p>
+                </div>
+              ) : null}
+
+              {scanStatus === "error" ? (
+                <div className="aam-status aam-status--error">
+                  <span style={{ whiteSpace: "pre-wrap" }}>{scanError}</span>
+                  <button className="aam-retry-btn" type="button" onClick={() => void handleTraeScan()}>
+                    <RefreshIcon /> 重新扫描
+                  </button>
+                </div>
+              ) : null}
             </div>
           )}
 

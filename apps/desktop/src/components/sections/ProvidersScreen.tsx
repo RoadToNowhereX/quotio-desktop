@@ -273,7 +273,17 @@ export function ProvidersScreen({
       })
       .catch(() => {});
   }, [appState.management.auth_files, appState.quotas]);
-  const oauthProviders = appState.providers.filter((provider) => provider.native_oauth || provider.oauth_endpoint || provider.supports_manual_auth);
+  // Providers eligible to appear in the "add account" menu. Local-scan
+  // providers (Trae / Cursor) read auth directly from their IDE's storage, so
+  // they have no OAuth endpoint and no manual token — include them via their
+  // auth_method so the dedicated scan flow in AddAccountModal can run.
+  const oauthProviders = appState.providers.filter(
+    (provider) =>
+      provider.native_oauth ||
+      provider.oauth_endpoint ||
+      provider.supports_manual_auth ||
+      provider.auth_method === "local_scan",
+  );
 
   const [addAccountProvider, setAddAccountProvider] = useState<ProviderSummary | null>(null);
   const [projectId] = useState("");

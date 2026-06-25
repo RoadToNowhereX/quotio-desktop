@@ -15,6 +15,7 @@ import type {
   AppState,
   AuthFile,
   AuthMethod,
+  ProviderRole,
   ProviderSummary,
   QuotaModelUsage,
   RequestLogEntry,
@@ -29,6 +30,8 @@ type ProviderFlags = {
   uses_cli_quota?: boolean;
   uses_api_key_auth?: boolean;
   native_oauth?: boolean;
+  role?: ProviderRole;
+  supports_manual_auth?: boolean;
 };
 
 function provider(
@@ -42,12 +45,12 @@ function provider(
     id,
     display_name,
     auth_method,
-    role: "provider",
+    role: flags.role ?? "provider",
     logo_asset_name: `${id}.svg`,
     color_hex,
     oauth_endpoint: auth_method === "o_auth" ? `https://auth.example.com/${id}` : null,
     supports_quota_only_mode: true,
-    supports_manual_auth: true,
+    supports_manual_auth: flags.supports_manual_auth ?? true,
     uses_browser_auth: flags.uses_browser_auth ?? false,
     uses_cli_quota: flags.uses_cli_quota ?? false,
     uses_api_key_auth: flags.uses_api_key_auth ?? false,
@@ -90,6 +93,11 @@ const providers: ProviderSummary[] = [
   provider("qwen", "Qwen Code", "o_auth", "615CED", { native_oauth: true }),
   provider("iflow", "iFlow", "api_key", "2D7CF6", { uses_api_key_auth: true }),
   provider("vertex", "Vertex AI", "service_account", "34A853"),
+  provider("trae", "Trae", "local_scan", "00B4D8", {
+    role: "monitor",
+    supports_manual_auth: false,
+    uses_browser_auth: true,
+  }),
 ];
 
 const authFiles: AuthFile[] = [
@@ -174,6 +182,12 @@ const accountQuotas: AccountQuota[] = [
   quota("kiro-1", "kiro", "cloud@kiro.example.com", "Pro", false, false, [
     model("Claude", 22, "18h"),
     model("Claude Haiku", 100, "18h"),
+  ]),
+  quota("trae", "trae", "trae-user@example.com", "Pro", false, false, [
+    model("Premium Fast", 68, "3h 20m"),
+    model("Premium Slow", 91, "3h 20m"),
+    model("Advanced Model", 45, "3h 20m"),
+    model("Auto Completion", 82, "3h 20m"),
   ]),
 ];
 
@@ -756,6 +770,13 @@ export async function mockInvoke<T>(command: string, args?: Record<string, unkno
       return undefined as unknown as T;
     case "import_auth_token":
       return undefined as unknown as T;
+    case "scan_trae_account":
+      return {
+        source: "Trae CN",
+        storage_path: "C:\\Users\\demo\\AppData\\Roaming\\Trae CN\\User\\globalStorage\\storage.json",
+        email: "trae-user@example.com",
+        username: "trae-user",
+      } as unknown as T;
     case "native_oauth_start":
       return {
         login_id: "mock-native-login-id",

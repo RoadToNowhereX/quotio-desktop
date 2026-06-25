@@ -144,6 +144,16 @@ export type ProviderSummary = {
   native_oauth?: boolean;
 };
 
+// Mirrors crates/quotio-core `quota::TraeScanResult`. Returned by the
+// `scan_trae_account` Tauri command after probing the Trae / Trae CN IDE
+// `storage.json` so the add-account modal can confirm the detected account.
+export type TraeScanResult = {
+  source: string;
+  storage_path: string;
+  email: string | null;
+  username: string | null;
+};
+
 export type NativeOAuthStartResponse = {
   login_id: string;
   auth_url: string;

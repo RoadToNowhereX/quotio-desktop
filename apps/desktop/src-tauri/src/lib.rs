@@ -1327,6 +1327,15 @@ fn import_auth_token(provider_id: String, content: String) -> Result<(), String>
     quotio_core::native_oauth::import_auth_token(&provider_id, &content)
 }
 
+/// Probe the local Trae / Trae CN IDE installation and report which account was
+/// found. Trae auth is auto-read from `storage.json` (no OAuth / manual token),
+/// so the "add account" modal uses this to confirm the scan and trigger a quota
+/// refresh instead of going through the OAuth flow.
+#[tauri::command]
+fn scan_trae_account() -> Result<quotio_core::quota::TraeScanResult, String> {
+    quotio_core::quota::scan_trae_account()
+}
+
 #[tauri::command]
 async fn import_management_vertex_service_account(
     json: String,
@@ -1758,6 +1767,7 @@ pub fn run() {
             native_oauth_cancel,
             native_oauth_submit_callback,
             import_auth_token,
+            scan_trae_account,
             import_management_vertex_service_account,
             set_management_max_retry_interval,
             set_management_logging_to_file,
